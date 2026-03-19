@@ -1,5 +1,5 @@
 /* ============================================
-   Team LMS — Single Page Application
+   BruntWork LMS — Single Page Application
    ============================================ */
 
 // --- State ---
@@ -213,7 +213,7 @@ function sidebarLayout(activeKey, content) {
         <aside class="sidebar">
             <div class="sidebar-brand">
                 <div class="brand-icon"><i data-lucide="graduation-cap"></i></div>
-                <h2>Team LMS</h2>
+                <h2>BruntWork LMS</h2>
             </div>
             <nav class="sidebar-nav">
                 <div class="sidebar-section-title">Learn</div>
@@ -258,7 +258,7 @@ function renderLogin() {
             <div class="auth-card">
                 <div class="auth-brand">
                     <div class="brand-icon"><i data-lucide="graduation-cap"></i></div>
-                    <h1>Team LMS</h1>
+                    <h1>BruntWork LMS</h1>
                     <p>Sign in to your learning account</p>
                 </div>
                 <form id="login-form">
@@ -892,7 +892,7 @@ async function renderCertificateView(code) {
                 <div class="certificate">
                     <div class="certificate-icon"><i data-lucide="award"></i></div>
                     <div class="certificate-subtitle">Certificate of Completion</div>
-                    <h1>Team LMS</h1>
+                    <h1>BruntWork LMS</h1>
                     <div class="certificate-text">This is to certify that</div>
                     <div class="certificate-name">${escapeHtml(cert.userName || state.user?.name || '')}</div>
                     <div class="certificate-text">has successfully completed the course</div>

@@ -1,16 +1,16 @@
 /* ============================================
-   Team LMS — Style Sheet
+   BruntWork LMS — Style Sheet
    ============================================ */
 
 /* --- CSS Variables / Theming --- */
 :root {
-    --primary: #3b82f6;
-    --primary-hover: #2563eb;
-    --primary-light: #dbeafe;
-    --primary-dark: #1d4ed8;
-    --sidebar-bg: #1e293b;
-    --sidebar-hover: #334155;
-    --sidebar-active: #3b82f6;
+    --primary: #0170B9;
+    --primary-hover: #015a94;
+    --primary-light: #e0f0fa;
+    --primary-dark: #014a7a;
+    --sidebar-bg: #1a1a2e;
+    --sidebar-hover: #2d2d44;
+    --sidebar-active: #0170B9;
     --sidebar-text: #94a3b8;
     --sidebar-text-active: #ffffff;
     --bg: #f1f5f9;
