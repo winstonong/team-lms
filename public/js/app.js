@@ -364,10 +364,10 @@ async function renderDashboard() {
     try {
         const [statsData, enrollmentsData] = await Promise.all([
             api('/dashboard/stats'),
-            api('/enrollments'),
+            api('/my/enrollments'),
         ]);
         state.enrollments = enrollmentsData.enrollments || enrollmentsData || [];
-        const stats = statsData;
+        const stats = statsData.stats || statsData;
 
         const inProgress = state.enrollments.filter(e => e.progress < 100);
 
@@ -381,28 +381,28 @@ async function renderDashboard() {
                     <div class="stat-icon blue"><i data-lucide="book-open"></i></div>
                     <div class="stat-info">
                         <h4>Enrolled Courses</h4>
-                        <div class="stat-value">${stats.enrolled || 0}</div>
+                        <div class="stat-value">${stats.total_enrollments || 0}</div>
                     </div>
                 </div>
                 <div class="stat-card">
                     <div class="stat-icon green"><i data-lucide="check-circle"></i></div>
                     <div class="stat-info">
                         <h4>Completed</h4>
-                        <div class="stat-value">${stats.completed || 0}</div>
+                        <div class="stat-value">${stats.total_completions || 0}</div>
                     </div>
                 </div>
                 <div class="stat-card">
                     <div class="stat-icon yellow"><i data-lucide="clock"></i></div>
                     <div class="stat-info">
                         <h4>In Progress</h4>
-                        <div class="stat-value">${stats.inProgress || 0}</div>
+                        <div class="stat-value">${(stats.total_enrollments || 0) - (stats.total_completions || 0)}</div>
                     </div>
                 </div>
                 <div class="stat-card">
                     <div class="stat-icon cyan"><i data-lucide="award"></i></div>
                     <div class="stat-info">
                         <h4>Certificates</h4>
-                        <div class="stat-value">${stats.certificates || 0}</div>
+                        <div class="stat-value">${stats.total_certificates || 0}</div>
                     </div>
                 </div>
             </div>
@@ -832,7 +832,7 @@ function showQuizResults(result, questions, answers, courseId, lessonId) {
 async function renderCertificates() {
     render(sidebarLayout('certificates', `<div class="loading-page"><div class="spinner spinner-lg"></div><p>Loading certificates...</p></div>`));
     try {
-        const data = await api('/certificates');
+        const data = await api('/my/certificates');
         state.certificates = data.certificates || data || [];
 
         const content = `
