@@ -546,7 +546,8 @@ async function renderCourseDetail(courseId) {
         state.currentCourse = data.course || data;
         const c = state.currentCourse;
         const enrollment = c.enrollment || null;
-        const lessons = c.lessons || [];
+        const lessons = data.lessons || c.lessons || [];
+        c.lessons = lessons;
         const progress = enrollment ? enrollment.progress || 0 : 0;
         const completedLessons = enrollment ? (enrollment.completedLessons || []) : [];
         const isInstructor = state.user && (state.user.role === 'admin' || state.user.role === 'instructor');
@@ -633,12 +634,18 @@ async function renderLesson(courseId, lessonId) {
         const data = await api(`/courses/${courseId}`);
         state.currentCourse = data.course || data;
         const c = state.currentCourse;
-        const lessons = c.lessons || [];
+        const lessons = data.lessons || c.lessons || [];
+        c.lessons = lessons;
         const enrollment = c.enrollment || {};
         const completedLessons = enrollment.completedLessons || [];
         const progress = enrollment.progress || 0;
-        const lesson = lessons.find(l => String(l.id) === String(lessonId));
+        // Fetch individual lesson detail (includes quiz data)
+        let lesson = lessons.find(l => String(l.id) === String(lessonId));
         if (!lesson) { showToast('Lesson not found', 'error'); navigate('/courses/' + courseId); return; }
+        try {
+            const lessonDetail = await api(`/courses/${courseId}/lessons/${lessonId}`);
+            lesson = lessonDetail.lesson || lessonDetail;
+        } catch(e) {}
 
         const lessonIndex = lessons.indexOf(lesson);
         const prevLesson = lessons[lessonIndex - 1];
@@ -767,7 +774,7 @@ function showQuiz(courseId, lessonId) {
         });
 
         try {
-            const result = await api(`/courses/${courseId}/lessons/${lessonId}/quiz`, {
+            const result = await api(`/quizzes/${quiz.id}/submit`, {
                 method: 'POST',
                 body: JSON.stringify({ answers }),
             });
@@ -908,7 +915,7 @@ async function renderCertificateView(code) {
 async function renderAdminCourses() {
     render(sidebarLayout('admin-courses', `<div class="loading-page"><div class="spinner spinner-lg"></div><p>Loading courses...</p></div>`));
     try {
-        const data = await api('/admin/courses');
+        const data = await api('/courses');
         const courses = data.courses || data || [];
 
         const content = `
@@ -1178,10 +1185,10 @@ async function saveCourseEditor() {
 
     try {
         if (isEdit) {
-            await api(`/admin/courses/${window._editorCourseId}`, { method: 'PUT', body: JSON.stringify(c) });
+            await api(`/courses/${window._editorCourseId}`, { method: 'PUT', body: JSON.stringify(c) });
             showToast('Course updated!');
         } else {
-            await api('/admin/courses', { method: 'POST', body: JSON.stringify(c) });
+            await api('/courses', { method: 'POST', body: JSON.stringify(c) });
             showToast('Course created!');
         }
         closeModal();
@@ -1195,7 +1202,7 @@ async function handleDeleteCourse(id) {
     const ok = await confirmDialog('Are you sure you want to delete this course? This cannot be undone.');
     if (!ok) return;
     try {
-        await api(`/admin/courses/${id}`, { method: 'DELETE' });
+        await api(`/courses/${id}`, { method: 'DELETE' });
         showToast('Course deleted');
         renderAdminCourses();
     } catch (err) {
@@ -1207,7 +1214,7 @@ async function handleDeleteCourse(id) {
 async function renderAdminUsers() {
     render(sidebarLayout('admin-users', `<div class="loading-page"><div class="spinner spinner-lg"></div><p>Loading users...</p></div>`));
     try {
-        const data = await api('/admin/users');
+        const data = await api('/users');
         state.users = data.users || data || [];
 
         const content = `
@@ -1256,7 +1263,7 @@ async function renderAdminUsers() {
 
 async function handleChangeRole(userId, role) {
     try {
-        await api(`/admin/users/${userId}/role`, { method: 'PUT', body: JSON.stringify({ role }) });
+        await api(`/users/${userId}/role`, { method: 'PUT', body: JSON.stringify({ role }) });
         showToast('Role updated');
     } catch (err) {
         showToast(err.message, 'error');
