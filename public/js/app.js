@@ -225,6 +225,7 @@ function sidebarLayout(activeKey, content) {
                     ${link('/admin/courses', 'settings', 'Manage Courses', 'admin-courses')}
                     ${link('/admin/progress', 'bar-chart-3', 'Course Progress', 'admin-progress')}
                     ${isAdmin ? link('/admin/users', 'users', 'Manage Users', 'admin-users') : ''}
+                    ${isAdmin ? link('/admin/announcements', 'mail', 'Send Email', 'admin-announcements') : ''}
                 ` : ''}
             </nav>
             <div class="sidebar-user">
@@ -273,6 +274,9 @@ function renderLogin() {
                     </div>
                     <button class="btn btn-primary btn-block btn-lg" type="submit">Sign In</button>
                 </form>
+                <div class="auth-footer" style="margin-top:12px">
+                    <a href="#/forgot-password">Forgot password?</a>
+                </div>
                 <div class="auth-footer">
                     Don't have an account? <a href="#/register">Register</a>
                 </div>
@@ -355,6 +359,100 @@ function renderRegister() {
             showToast(err.message, 'error');
             btn.disabled = false;
             btn.textContent = 'Create Account';
+        }
+    });
+}
+
+// --- Forgot Password ---
+function renderForgotPassword() {
+    render(`
+        <div class="auth-page">
+            <div class="auth-card">
+                <div class="auth-brand">
+                    <div class="brand-icon"><i data-lucide="key-round"></i></div>
+                    <h1>Forgot password</h1>
+                    <p>Enter your email and we'll send you a reset link</p>
+                </div>
+                <form id="forgot-form">
+                    <div class="form-group">
+                        <label class="form-label">Email</label>
+                        <input class="form-input" type="email" id="forgot-email" placeholder="you@company.com" required>
+                    </div>
+                    <button class="btn btn-primary btn-block btn-lg" type="submit">Send reset link</button>
+                </form>
+                <div class="auth-footer">
+                    <a href="#/login">Back to sign in</a>
+                </div>
+            </div>
+        </div>
+    `);
+    document.getElementById('forgot-form').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const btn = e.target.querySelector('button[type=submit]');
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner"></span> Sending...';
+        try {
+            const data = await api('/auth/forgot-password', {
+                method: 'POST',
+                body: JSON.stringify({ email: document.getElementById('forgot-email').value }),
+            });
+            showToast(data.message || 'If an account exists, a reset link has been sent.');
+            btn.disabled = false;
+            btn.textContent = 'Send reset link';
+        } catch (err) {
+            showToast(err.message, 'error');
+            btn.disabled = false;
+            btn.textContent = 'Send reset link';
+        }
+    });
+}
+
+// --- Reset Password ---
+function renderResetPassword(token) {
+    render(`
+        <div class="auth-page">
+            <div class="auth-card">
+                <div class="auth-brand">
+                    <div class="brand-icon"><i data-lucide="lock"></i></div>
+                    <h1>Set a new password</h1>
+                    <p>Choose a strong password (min 6 characters)</p>
+                </div>
+                <form id="reset-form">
+                    <div class="form-group">
+                        <label class="form-label">New password</label>
+                        <input class="form-input" type="password" id="reset-password" required minlength="6">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Confirm password</label>
+                        <input class="form-input" type="password" id="reset-confirm" required minlength="6">
+                    </div>
+                    <button class="btn btn-primary btn-block btn-lg" type="submit">Update password</button>
+                </form>
+                <div class="auth-footer">
+                    <a href="#/login">Back to sign in</a>
+                </div>
+            </div>
+        </div>
+    `);
+    document.getElementById('reset-form').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const pw = document.getElementById('reset-password').value;
+        const confirm = document.getElementById('reset-confirm').value;
+        if (pw !== confirm) { showToast("Passwords don't match", 'error'); return; }
+        const btn = e.target.querySelector('button[type=submit]');
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner"></span> Updating...';
+        try {
+            await api('/auth/reset-password', {
+                method: 'POST',
+                body: JSON.stringify({ token, password: pw }),
+            });
+            showToast('Password updated. Please sign in.');
+            navigate('/login');
+        } catch (err) {
+            showToast(err.message, 'error');
+            btn.disabled = false;
+            btn.textContent = 'Update password';
         }
     });
 }
@@ -1435,6 +1533,108 @@ async function renderAdminCourseProgress(courseId) {
     }
 }
 
+// --- Admin: Send Announcement ---
+async function renderAdminAnnouncements() {
+    render(sidebarLayout('admin-announcements', `<div class="loading-page"><div class="spinner spinner-lg"></div><p>Loading...</p></div>`));
+    try {
+        const data = await api('/courses');
+        const courses = data.courses || [];
+
+        const content = `
+            <div class="page-header">
+                <h1>Send Email</h1>
+                <p>Send a one-off email to your team. Requires Resend to be configured.</p>
+            </div>
+            <div class="card" style="max-width:760px">
+                <form id="announce-form" style="padding:24px">
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label class="form-label">Audience</label>
+                            <select class="form-select" id="ann-audience">
+                                <option value="all">Everyone (all users)</option>
+                                <option value="learners">Learners only</option>
+                                <option value="enrolled">Learners enrolled in a specific course</option>
+                            </select>
+                        </div>
+                        <div class="form-group" id="ann-course-group" style="display:none">
+                            <label class="form-label">Course</label>
+                            <select class="form-select" id="ann-course">
+                                ${courses.map(c => `<option value="${c.id}">${escapeHtml(c.title)}</option>`).join('')}
+                            </select>
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Subject</label>
+                        <input class="form-input" id="ann-subject" placeholder="e.g. New course available: Onboarding 101" required>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Message (HTML allowed)</label>
+                        <textarea class="form-textarea" id="ann-message" rows="8" placeholder="Hi team,&#10;&#10;Write your announcement here..." required></textarea>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label class="form-label">Button label (optional)</label>
+                            <input class="form-input" id="ann-action-label" placeholder="View course">
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">Button URL (optional)</label>
+                            <input class="form-input" id="ann-action-url" placeholder="https://...">
+                        </div>
+                    </div>
+                    <div style="margin-top:16px; display:flex; gap:12px">
+                        <button class="btn btn-primary" type="submit"><i data-lucide="send"></i> Send</button>
+                        <button class="btn btn-secondary" type="button" id="ann-test"><i data-lucide="mail-check"></i> Send test to me</button>
+                    </div>
+                </form>
+                <div id="ann-result" style="padding:0 24px 24px"></div>
+            </div>
+        `;
+        render(sidebarLayout('admin-announcements', content));
+
+        document.getElementById('ann-audience').addEventListener('change', (e) => {
+            document.getElementById('ann-course-group').style.display = e.target.value === 'enrolled' ? '' : 'none';
+        });
+
+        async function send(payloadOverride = {}) {
+            const subject = document.getElementById('ann-subject').value.trim();
+            const message = document.getElementById('ann-message').value.trim();
+            if (!subject || !message) { showToast('Subject and message are required', 'error'); return; }
+            const audience = document.getElementById('ann-audience').value;
+            const course_id = document.getElementById('ann-course')?.value;
+            const action_label = document.getElementById('ann-action-label').value.trim() || undefined;
+            const action_url = document.getElementById('ann-action-url').value.trim() || undefined;
+            const messageHtml = message.startsWith('<') ? message : message.split(/\n\n+/).map(p => `<p>${p.replace(/\n/g, '<br>')}</p>`).join('');
+
+            const body = {
+                subject, message: messageHtml,
+                audience, course_id,
+                action_label, action_url,
+                ...payloadOverride,
+            };
+            try {
+                const result = await api('/admin/announcements', { method: 'POST', body: JSON.stringify(body) });
+                document.getElementById('ann-result').innerHTML = `
+                    <div class="card" style="padding:14px; border-left:4px solid var(--success); background:var(--success-light); color:#065f46">
+                        Sent ${result.sent} of ${result.total} ${result.failed ? `(${result.failed} failed)` : ''}
+                    </div>`;
+                showToast(`Sent ${result.sent} email${result.sent === 1 ? '' : 's'}`);
+            } catch (err) {
+                showToast(err.message, 'error');
+            }
+        }
+
+        document.getElementById('announce-form').addEventListener('submit', (e) => { e.preventDefault(); send(); });
+        document.getElementById('ann-test').addEventListener('click', () => {
+            // Override audience to send only to current admin
+            send({ audience: 'self' });
+        });
+
+        lucide.createIcons();
+    } catch (err) {
+        showToast(err.message, 'error');
+    }
+}
+
 // --- Admin: Manage Users ---
 async function renderAdminUsers() {
     render(sidebarLayout('admin-users', `<div class="loading-page"><div class="spinner spinner-lg"></div><p>Loading users...</p></div>`));
@@ -1502,6 +1702,8 @@ async function handleChangeRole(userId, role) {
 const routes = [
     { pattern: '/login', handler: () => renderLogin() },
     { pattern: '/register', handler: () => renderRegister() },
+    { pattern: '/forgot-password', handler: () => renderForgotPassword() },
+    { pattern: '/reset-password/:token', handler: (p) => renderResetPassword(p.token) },
     { pattern: '/dashboard', handler: () => renderDashboard() },
     { pattern: '/courses', handler: () => renderCourses() },
     { pattern: '/courses/:id', handler: (p) => renderCourseDetail(p.id) },
@@ -1512,6 +1714,7 @@ const routes = [
     { pattern: '/admin/progress', handler: () => renderAdminProgress() },
     { pattern: '/admin/progress/:courseId', handler: (p) => renderAdminCourseProgress(p.courseId) },
     { pattern: '/admin/users', handler: () => renderAdminUsers() },
+    { pattern: '/admin/announcements', handler: () => renderAdminAnnouncements() },
 ];
 
 function routeHandler() {
@@ -1519,12 +1722,13 @@ function routeHandler() {
     loadAuth();
 
     // Auth guard
-    const publicRoutes = ['/login', '/register'];
-    if (!state.user && !publicRoutes.includes(path)) {
+    const publicRoutes = ['/login', '/register', '/forgot-password'];
+    const isPublic = publicRoutes.includes(path) || path.startsWith('/reset-password/');
+    if (!state.user && !isPublic) {
         navigate('/login');
         return;
     }
-    if (state.user && publicRoutes.includes(path)) {
+    if (state.user && isPublic) {
         navigate('/dashboard');
         return;
     }

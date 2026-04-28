@@ -6,6 +6,7 @@ const cookieParser = require('cookie-parser');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
+const emailLib = require('./email');
 
 // ---------------------------------------------------------------------------
 // Config
@@ -178,6 +179,15 @@ function initDatabase() {
     )
   `);
   db.run(`
+    CREATE TABLE IF NOT EXISTS password_reset_tokens (
+      token TEXT PRIMARY KEY,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      expires_at TEXT NOT NULL,
+      used INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )
+  `);
+  db.run(`
     CREATE TABLE IF NOT EXISTS certificates (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       user_id INTEGER NOT NULL REFERENCES users(id),
@@ -283,6 +293,13 @@ app.post('/api/auth/register', (req, res) => {
     const user = dbGet('SELECT * FROM users WHERE id = ?', [result.lastInsertRowid]);
     const token = signToken(user);
     res.cookie(COOKIE_NAME, token, { httpOnly: true, maxAge: 7 * 24 * 60 * 60 * 1000, sameSite: 'lax' });
+
+    // Fire welcome email (non-blocking — never fail registration on email issues)
+    if (emailLib.isConfigured()) {
+      emailLib.sendWelcome({ to: user.email, name: user.name })
+        .catch(err => console.error('[email] welcome failed:', err.message));
+    }
+
     res.status(201).json({ user: sanitizeUser(user) });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -292,6 +309,63 @@ app.post('/api/auth/register', (req, res) => {
 app.post('/api/auth/logout', (_req, res) => {
   res.clearCookie(COOKIE_NAME);
   res.json({ message: 'Logged out' });
+});
+
+// ---------------------------------------------------------------------------
+// PASSWORD RESET
+// ---------------------------------------------------------------------------
+// Always responds 200 regardless of whether the email exists, so attackers
+// can't enumerate accounts. The actual reset link is delivered via email.
+app.post('/api/auth/forgot-password', async (req, res) => {
+  try {
+    const { email } = req.body;
+    if (!email) return res.status(400).json({ error: 'Email is required' });
+
+    const user = dbGet('SELECT * FROM users WHERE email = ?', [email]);
+    if (user) {
+      const token = crypto.randomBytes(32).toString('hex');
+      const expires = new Date(Date.now() + 60 * 60 * 1000).toISOString(); // 1 hour
+      dbRun(
+        'INSERT INTO password_reset_tokens (token, user_id, expires_at) VALUES (?, ?, ?)',
+        [token, user.id, expires]
+      );
+
+      if (emailLib.isConfigured()) {
+        const result = await emailLib.sendPasswordReset({
+          to: user.email, name: user.name, token
+        });
+        if (!result.ok) console.error('[forgot-password] send failed:', result.error);
+      } else {
+        console.warn(`[forgot-password] Email not configured. Manual reset URL: /#/reset-password/${token}`);
+      }
+    }
+
+    res.json({ message: 'If an account exists for that email, a reset link has been sent.' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/auth/reset-password', (req, res) => {
+  try {
+    const { token, password } = req.body;
+    if (!token || !password) return res.status(400).json({ error: 'Token and password are required' });
+    if (password.length < 6) return res.status(400).json({ error: 'Password must be at least 6 characters' });
+
+    const row = dbGet('SELECT * FROM password_reset_tokens WHERE token = ?', [token]);
+    if (!row || row.used) return res.status(400).json({ error: 'Invalid or already-used reset link' });
+    if (new Date(row.expires_at).getTime() < Date.now()) {
+      return res.status(400).json({ error: 'This reset link has expired. Please request a new one.' });
+    }
+
+    const hash = bcrypt.hashSync(password, SALT_ROUNDS);
+    dbRun('UPDATE users SET password_hash = ? WHERE id = ?', [hash, row.user_id]);
+    dbRun('UPDATE password_reset_tokens SET used = 1 WHERE token = ?', [token]);
+
+    res.json({ message: 'Password updated. You can sign in now.' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.get('/api/auth/me', requireAuth, (req, res) => {
@@ -954,6 +1028,60 @@ app.get('/api/my/certificates', requireAuth, (req, res) => {
       ORDER BY cert.issued_at DESC
     `, [req.user.id]);
     res.json({ certificates: certs });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// ADMIN: SEND ANNOUNCEMENT EMAIL
+// ---------------------------------------------------------------------------
+// Send a one-off email to a subset of users (or all). Resend has rate limits;
+// we send sequentially with small batches to stay well under them.
+app.post('/api/admin/announcements', ...requireRole('admin'), async (req, res) => {
+  try {
+    const { subject, message, audience, course_id, action_label, action_url } = req.body;
+    if (!subject || !message) {
+      return res.status(400).json({ error: 'Subject and message are required' });
+    }
+    if (!emailLib.isConfigured()) {
+      return res.status(503).json({ error: 'Email is not configured. Set RESEND_API_KEY in Railway.' });
+    }
+
+    let users = [];
+    if (audience === 'self') {
+      // Test send: just to the requesting admin
+      users = dbAll('SELECT id, name, email FROM users WHERE id = ?', [req.user.id]);
+    } else if (audience === 'enrolled' && course_id) {
+      users = dbAll(`
+        SELECT DISTINCT u.id, u.name, u.email
+        FROM users u
+        JOIN enrollments e ON e.user_id = u.id
+        WHERE e.course_id = ?
+      `, [parseInt(course_id)]);
+    } else if (audience === 'learners') {
+      users = dbAll('SELECT id, name, email FROM users WHERE role = ?', ['learner']);
+    } else {
+      users = dbAll('SELECT id, name, email FROM users');
+    }
+
+    let sent = 0, failed = 0;
+    const errors = [];
+    for (const u of users) {
+      const result = await emailLib.sendAnnouncement({
+        to: u.email,
+        subject,
+        message, // HTML allowed
+        actionLabel: action_label,
+        actionUrl: action_url,
+      });
+      if (result.ok) sent++;
+      else { failed++; errors.push(`${u.email}: ${result.error}`); }
+      // Small pacing to avoid hitting Resend's free-tier rate limit (~10/sec)
+      await new Promise(r => setTimeout(r, 120));
+    }
+
+    res.json({ sent, failed, total: users.length, errors: errors.slice(0, 5) });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
