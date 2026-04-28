@@ -602,8 +602,8 @@ function renderCourseList(search = '', category = '') {
                             <h3>${escapeHtml(c.title)}</h3>
                             <div class="course-card-meta">
                                 ${difficultyBadge(c.difficulty)}
-                                <span><i data-lucide="layers"></i> ${(c.lessons || []).length} lessons</span>
-                                <span><i data-lucide="users"></i> ${c.enrolledCount || 0} enrolled</span>
+                                <span><i data-lucide="layers"></i> ${c.lesson_count ?? (c.lessons || []).length} lessons</span>
+                                <span><i data-lucide="users"></i> ${c.enrollment_count ?? c.enrolledCount ?? 0} enrolled</span>
                             </div>
                             <p style="font-size:0.85rem; color: var(--text-secondary); margin:0; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden;">
                                 ${escapeHtml((c.description || '').slice(0, 120))}
@@ -1046,8 +1046,8 @@ async function renderAdminCourses() {
                                     <td style="font-weight:600">${escapeHtml(c.title)}</td>
                                     <td>${escapeHtml(c.category || '-')}</td>
                                     <td>${difficultyBadge(c.difficulty)}</td>
-                                    <td>${(c.lessons || []).length}</td>
-                                    <td>${c.enrolledCount || 0}</td>
+                                    <td>${c.lesson_count ?? (c.lessons || []).length}</td>
+                                    <td>${c.enrollment_count ?? c.enrolledCount ?? 0}</td>
                                     <td><span class="badge badge-${c.status === 'published' ? 'published' : 'draft'}">${c.status || 'draft'}</span></td>
                                     <td>
                                         <div class="table-actions">
