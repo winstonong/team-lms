@@ -694,6 +694,7 @@ h4 { font-size: 1.1rem; font-weight: 600; }
 .badge-learner { background: var(--bg); color: var(--text-secondary); }
 .badge-published { background: var(--success-light); color: #065f46; }
 .badge-draft { background: var(--warning-light); color: #92400e; }
+.badge-warning { background: var(--warning-light); color: #92400e; }
 
 /* ============================================
    Progress Bars

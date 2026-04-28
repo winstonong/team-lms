@@ -339,7 +339,18 @@ function withStatus(course) {
 }
 
 function saveCourseLessons(courseId, lessons) {
-  if (!Array.isArray(lessons)) return;
+  if (!Array.isArray(lessons)) return { skipped: 0 };
+
+  // Validate up-front so we can return a clear error
+  const blank = lessons
+    .map((l, i) => ({ i, title: (l && l.title || '').trim() }))
+    .filter(x => !x.title);
+  if (blank.length) {
+    const indexes = blank.map(b => b.i + 1).join(', ');
+    const err = new Error(`Lesson ${indexes} is missing a title. Please name every lesson before saving.`);
+    err.statusCode = 400;
+    throw err;
+  }
 
   const existing = dbAll('SELECT id FROM lessons WHERE course_id = ?', [courseId]);
   const incomingIds = new Set(lessons.filter(l => l && l.id).map(l => l.id));
@@ -351,11 +362,13 @@ function saveCourseLessons(courseId, lessons) {
     }
   }
 
+  let saved = 0;
+
   // Upsert lessons in order
   for (let i = 0; i < lessons.length; i++) {
     const l = lessons[i] || {};
     const title = (l.title || '').trim();
-    if (!title) continue; // skip blank lessons
+    if (!title) continue; // already validated above, defensive
 
     const content = l.content || '';
     const duration = parseInt(l.duration ?? l.duration_minutes) || 0;
@@ -375,6 +388,7 @@ function saveCourseLessons(courseId, lessons) {
       );
       lessonId = result.lastInsertRowid;
     }
+    saved++;
 
     // Handle quiz upsert
     const quiz = l.quiz;
@@ -418,6 +432,8 @@ function saveCourseLessons(courseId, lessons) {
       dbRun('DELETE FROM quizzes WHERE id = ?', [existingQuiz.id]);
     }
   }
+
+  return { saved };
 }
 
 app.get('/api/courses', requireAuth, (req, res) => {
@@ -491,7 +507,7 @@ app.post('/api/courses', ...requireRole('admin', 'instructor'), (req, res) => {
     const course = dbGet('SELECT * FROM courses WHERE id = ?', [courseId]);
     res.status(201).json({ course: withStatus(course) });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(err.statusCode || 500).json({ error: err.message });
   }
 });
 
@@ -527,7 +543,7 @@ app.put('/api/courses/:id', ...requireRole('admin', 'instructor'), (req, res) =>
     const updated = dbGet('SELECT * FROM courses WHERE id = ?', [courseId]);
     res.json({ course: withStatus(updated) });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(err.statusCode || 500).json({ error: err.message });
   }
 });
 
@@ -938,6 +954,104 @@ app.get('/api/my/certificates', requireAuth, (req, res) => {
       ORDER BY cert.issued_at DESC
     `, [req.user.id]);
     res.json({ certificates: certs });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// ADMIN: COURSE COMPLETION TRACKING
+// ---------------------------------------------------------------------------
+
+// Per-course breakdown: for a given course, list every enrolled user with
+// their completion status, lesson progress count, and quiz results.
+app.get('/api/admin/courses/:courseId/progress', ...requireRole('admin', 'instructor'), (req, res) => {
+  try {
+    const courseId = parseInt(req.params.courseId);
+    const course = dbGet('SELECT * FROM courses WHERE id = ?', [courseId]);
+    if (!course) return res.status(404).json({ error: 'Course not found' });
+    if (req.user.role !== 'admin' && course.instructor_id !== req.user.id) {
+      return res.status(403).json({ error: 'Not authorized' });
+    }
+
+    const totalLessons = dbGet('SELECT COUNT(*) as c FROM lessons WHERE course_id = ?', [courseId]).c;
+
+    const rows = dbAll(`
+      SELECT
+        u.id            AS user_id,
+        u.name          AS user_name,
+        u.email         AS user_email,
+        u.role          AS user_role,
+        e.enrolled_at   AS enrolled_at,
+        e.completed_at  AS completed_at,
+        (SELECT COUNT(*) FROM lesson_progress lp
+           WHERE lp.user_id = u.id AND lp.course_id = ? AND lp.completed = 1)
+          AS lessons_completed,
+        (SELECT COUNT(*) FROM quiz_attempts qa
+           JOIN quizzes q ON qa.quiz_id = q.id
+           JOIN lessons l ON q.lesson_id = l.id
+           WHERE qa.user_id = u.id AND l.course_id = ? AND qa.passed = 1)
+          AS quizzes_passed
+      FROM enrollments e
+      JOIN users u ON e.user_id = u.id
+      WHERE e.course_id = ?
+      ORDER BY e.enrolled_at DESC
+    `, [courseId, courseId, courseId]);
+
+    const enrollments = rows.map(r => ({
+      ...r,
+      total_lessons: totalLessons,
+      progress_percent: totalLessons === 0 ? 0 : Math.round((r.lessons_completed / totalLessons) * 100),
+      is_completed: !!r.completed_at,
+    }));
+
+    const summary = {
+      total_enrolled: enrollments.length,
+      total_completed: enrollments.filter(e => e.is_completed).length,
+      total_in_progress: enrollments.filter(e => !e.is_completed && e.lessons_completed > 0).length,
+      total_not_started: enrollments.filter(e => !e.is_completed && e.lessons_completed === 0).length,
+      completion_rate: enrollments.length === 0 ? 0
+        : Math.round((enrollments.filter(e => e.is_completed).length / enrollments.length) * 100),
+      average_progress: enrollments.length === 0 ? 0
+        : Math.round(enrollments.reduce((sum, e) => sum + e.progress_percent, 0) / enrollments.length),
+    };
+
+    res.json({ course: withStatus(course), total_lessons: totalLessons, summary, enrollments });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// All-courses overview: completion rate per course
+app.get('/api/admin/progress/overview', ...requireRole('admin', 'instructor'), (req, res) => {
+  try {
+    const isInstructor = req.user.role === 'instructor';
+    const courseFilter = isInstructor ? 'WHERE c.instructor_id = ?' : '';
+    const params = isInstructor ? [req.user.id] : [];
+
+    const rows = dbAll(`
+      SELECT
+        c.id, c.title, c.is_published,
+        (SELECT COUNT(*) FROM lessons WHERE course_id = c.id) AS total_lessons,
+        (SELECT COUNT(*) FROM enrollments WHERE course_id = c.id) AS total_enrolled,
+        (SELECT COUNT(*) FROM enrollments WHERE course_id = c.id AND completed_at IS NOT NULL) AS total_completed
+      FROM courses c
+      ${courseFilter}
+      ORDER BY c.updated_at DESC
+    `, params);
+
+    const courses = rows.map(r => ({
+      id: r.id,
+      title: r.title,
+      status: r.is_published ? 'published' : 'draft',
+      total_lessons: r.total_lessons,
+      total_enrolled: r.total_enrolled,
+      total_completed: r.total_completed,
+      completion_rate: r.total_enrolled === 0 ? 0
+        : Math.round((r.total_completed / r.total_enrolled) * 100),
+    }));
+
+    res.json({ courses });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

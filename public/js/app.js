@@ -223,6 +223,7 @@ function sidebarLayout(activeKey, content) {
                 ${isInstructor ? `
                     <div class="sidebar-section-title">Admin</div>
                     ${link('/admin/courses', 'settings', 'Manage Courses', 'admin-courses')}
+                    ${link('/admin/progress', 'bar-chart-3', 'Course Progress', 'admin-progress')}
                     ${isAdmin ? link('/admin/users', 'users', 'Manage Users', 'admin-users') : ''}
                 ` : ''}
             </nav>
@@ -1250,6 +1251,19 @@ async function saveCourseEditor() {
     const c = window._editorCourse;
     const isEdit = !!window._editorCourseId;
 
+    // Frontend validation: course title + every lesson title
+    if (!c.title || !c.title.trim()) {
+        showToast('Course title is required', 'error');
+        return;
+    }
+    const blank = (c.lessons || [])
+        .map((l, i) => ({ i: i + 1, title: (l && l.title || '').trim() }))
+        .filter(x => !x.title);
+    if (blank.length) {
+        showToast(`Lesson ${blank.map(b => b.i).join(', ')} is missing a title`, 'error');
+        return;
+    }
+
     try {
         if (isEdit) {
             await api(`/courses/${window._editorCourseId}`, { method: 'PUT', body: JSON.stringify(c) });
@@ -1272,6 +1286,150 @@ async function handleDeleteCourse(id) {
         await api(`/courses/${id}`, { method: 'DELETE' });
         showToast('Course deleted');
         renderAdminCourses();
+    } catch (err) {
+        showToast(err.message, 'error');
+    }
+}
+
+// --- Admin: Course Progress (overview) ---
+async function renderAdminProgress() {
+    render(sidebarLayout('admin-progress', `<div class="loading-page"><div class="spinner spinner-lg"></div><p>Loading progress...</p></div>`));
+    try {
+        const data = await api('/admin/progress/overview');
+        const courses = data.courses || [];
+
+        const totalEnrolled = courses.reduce((s, c) => s + c.total_enrolled, 0);
+        const totalCompleted = courses.reduce((s, c) => s + c.total_completed, 0);
+        const overallRate = totalEnrolled === 0 ? 0 : Math.round((totalCompleted / totalEnrolled) * 100);
+
+        const content = `
+            <div class="page-header">
+                <h1>Course Progress</h1>
+                <p>Track enrolment and completion across every course</p>
+            </div>
+            <div class="stats-grid" style="margin-bottom:24px">
+                <div class="stat-card"><div class="stat-icon blue"><i data-lucide="users"></i></div><div><h4>Total Enrolments</h4><div class="stat-value">${totalEnrolled}</div></div></div>
+                <div class="stat-card"><div class="stat-icon green"><i data-lucide="check-circle-2"></i></div><div><h4>Completions</h4><div class="stat-value">${totalCompleted}</div></div></div>
+                <div class="stat-card"><div class="stat-icon cyan"><i data-lucide="percent"></i></div><div><h4>Overall Completion Rate</h4><div class="stat-value">${overallRate}%</div></div></div>
+            </div>
+            <div class="card">
+                <div class="table-wrapper">
+                    <table class="table">
+                        <thead><tr>
+                            <th>Course</th>
+                            <th>Status</th>
+                            <th>Lessons</th>
+                            <th>Enrolled</th>
+                            <th>Completed</th>
+                            <th>Completion Rate</th>
+                            <th>Actions</th>
+                        </tr></thead>
+                        <tbody>
+                            ${courses.length === 0 ? `<tr><td colspan="7" style="text-align:center; color:var(--text-secondary); padding:32px">No courses yet</td></tr>` :
+                              courses.map(c => `
+                                <tr>
+                                    <td style="font-weight:500">${escapeHtml(c.title)}</td>
+                                    <td><span class="badge badge-${c.status === 'published' ? 'published' : 'draft'}">${c.status}</span></td>
+                                    <td>${c.total_lessons}</td>
+                                    <td>${c.total_enrolled}</td>
+                                    <td>${c.total_completed}</td>
+                                    <td>
+                                        <div style="display:flex; align-items:center; gap:8px">
+                                            <div style="flex:1; max-width:120px; height:8px; background:var(--border); border-radius:4px; overflow:hidden">
+                                                <div style="height:100%; width:${c.completion_rate}%; background:var(--success)"></div>
+                                            </div>
+                                            <span style="font-weight:500; min-width:40px">${c.completion_rate}%</span>
+                                        </div>
+                                    </td>
+                                    <td>
+                                        <button class="btn btn-sm btn-secondary" onclick="navigate('/admin/progress/${c.id}')">
+                                            <i data-lucide="users"></i> View Learners
+                                        </button>
+                                    </td>
+                                </tr>
+                              `).join('')}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        `;
+        render(sidebarLayout('admin-progress', content));
+    } catch (err) {
+        showToast(err.message, 'error');
+    }
+}
+
+// --- Admin: Course Progress (per-course detail) ---
+async function renderAdminCourseProgress(courseId) {
+    render(sidebarLayout('admin-progress', `<div class="loading-page"><div class="spinner spinner-lg"></div><p>Loading learners...</p></div>`));
+    try {
+        const data = await api(`/admin/courses/${courseId}/progress`);
+        const c = data.course;
+        const s = data.summary;
+        const enrollments = data.enrollments || [];
+
+        const content = `
+            <div class="page-header">
+                <div>
+                    <a href="#/admin/progress" style="color:var(--text-secondary); text-decoration:none; font-size:0.85rem; display:inline-flex; align-items:center; gap:4px; margin-bottom:8px">
+                        <i data-lucide="arrow-left" style="width:14px; height:14px"></i> Back to all courses
+                    </a>
+                    <h1>${escapeHtml(c.title)}</h1>
+                    <p>${data.total_lessons} lessons · <span class="badge badge-${c.status === 'published' ? 'published' : 'draft'}">${c.status}</span></p>
+                </div>
+            </div>
+            <div class="stats-grid" style="margin-bottom:24px">
+                <div class="stat-card"><div class="stat-icon blue"><i data-lucide="users"></i></div><div><h4>Enrolled</h4><div class="stat-value">${s.total_enrolled}</div></div></div>
+                <div class="stat-card"><div class="stat-icon green"><i data-lucide="check-circle-2"></i></div><div><h4>Completed</h4><div class="stat-value">${s.total_completed}</div></div></div>
+                <div class="stat-card"><div class="stat-icon yellow"><i data-lucide="clock"></i></div><div><h4>In Progress</h4><div class="stat-value">${s.total_in_progress}</div></div></div>
+                <div class="stat-card"><div class="stat-icon cyan"><i data-lucide="percent"></i></div><div><h4>Avg Progress</h4><div class="stat-value">${s.average_progress}%</div></div></div>
+            </div>
+            <div class="card">
+                <div class="table-wrapper">
+                    <table class="table">
+                        <thead><tr>
+                            <th>Learner</th>
+                            <th>Email</th>
+                            <th>Enrolled</th>
+                            <th>Lessons Completed</th>
+                            <th>Progress</th>
+                            <th>Quizzes Passed</th>
+                            <th>Status</th>
+                            <th>Completed On</th>
+                        </tr></thead>
+                        <tbody>
+                            ${enrollments.length === 0 ? `<tr><td colspan="8" style="text-align:center; color:var(--text-secondary); padding:32px">No one is enrolled yet</td></tr>` :
+                              enrollments.map(e => `
+                                <tr>
+                                    <td style="font-weight:500">${escapeHtml(e.user_name)}</td>
+                                    <td style="color:var(--text-secondary)">${escapeHtml(e.user_email)}</td>
+                                    <td style="color:var(--text-secondary)">${formatDate(e.enrolled_at)}</td>
+                                    <td>${e.lessons_completed} / ${e.total_lessons}</td>
+                                    <td>
+                                        <div style="display:flex; align-items:center; gap:8px">
+                                            <div style="flex:1; max-width:100px; height:6px; background:var(--border); border-radius:3px; overflow:hidden">
+                                                <div style="height:100%; width:${e.progress_percent}%; background:var(--primary)"></div>
+                                            </div>
+                                            <span style="font-weight:500; min-width:40px; font-size:0.85rem">${e.progress_percent}%</span>
+                                        </div>
+                                    </td>
+                                    <td>${e.quizzes_passed}</td>
+                                    <td>
+                                        ${e.is_completed
+                                            ? '<span class="badge badge-published">Completed</span>'
+                                            : (e.lessons_completed > 0
+                                                ? '<span class="badge badge-warning">In Progress</span>'
+                                                : '<span class="badge badge-draft">Not Started</span>')}
+                                    </td>
+                                    <td style="color:var(--text-secondary)">${e.completed_at ? formatDate(e.completed_at) : '—'}</td>
+                                </tr>
+                              `).join('')}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        `;
+        render(sidebarLayout('admin-progress', content));
     } catch (err) {
         showToast(err.message, 'error');
     }
@@ -1351,6 +1509,8 @@ const routes = [
     { pattern: '/my/certificates', handler: () => renderCertificates() },
     { pattern: '/certificates/:code', handler: (p) => renderCertificateView(p.code) },
     { pattern: '/admin/courses', handler: () => renderAdminCourses() },
+    { pattern: '/admin/progress', handler: () => renderAdminProgress() },
+    { pattern: '/admin/progress/:courseId', handler: (p) => renderAdminCourseProgress(p.courseId) },
     { pattern: '/admin/users', handler: () => renderAdminUsers() },
 ];
 
