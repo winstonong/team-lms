@@ -17,13 +17,19 @@ const SALT_ROUNDS = 10;
 
 // ---------------------------------------------------------------------------
 // Ensure data directory exists
+//
+// IMPORTANT: In production (Railway), DATA_DIR should point to a mounted
+// volume (e.g. /data) so the SQLite file survives container redeploys.
+// Set DATA_DIR=/data in Railway env vars and attach a Volume mounted at /data.
+// Locally we fall back to ./data.
 // ---------------------------------------------------------------------------
-const dataDir = path.join(__dirname, 'data');
+const dataDir = process.env.DATA_DIR || path.join(__dirname, 'data');
 if (!fs.existsSync(dataDir)) {
   fs.mkdirSync(dataDir, { recursive: true });
 }
 
 const DB_PATH = path.join(dataDir, 'lms.db');
+console.log(`[db] Using SQLite file at ${DB_PATH}`);
 
 // ---------------------------------------------------------------------------
 // sql.js wrapper — provides a better-sqlite3-like synchronous interface
@@ -185,11 +191,15 @@ function initDatabase() {
 }
 
 function seedAdmin() {
-  const existing = dbGet('SELECT id FROM users WHERE email = ?', ['admin@team.com']);
+  const existing = dbGet('SELECT id, role FROM users WHERE email = ?', ['admin@team.com']);
   if (!existing) {
     const hash = bcrypt.hashSync('admin123', SALT_ROUNDS);
     dbRun('INSERT INTO users (email, name, password_hash, role) VALUES (?, ?, ?, ?)', ['admin@team.com', 'Admin', hash, 'admin']);
     console.log('Seeded admin user: admin@team.com / admin123');
+  } else if (existing.role !== 'admin') {
+    // Self-heal: ensure the seeded admin email always has admin role
+    dbRun("UPDATE users SET role = 'admin' WHERE email = ?", ['admin@team.com']);
+    console.log('Restored admin@team.com to admin role');
   }
 }
 
