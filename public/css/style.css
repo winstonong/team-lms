@@ -1442,6 +1442,24 @@ h4 { font-size: 1.1rem; font-weight: 600; }
     color: var(--text-muted);
 }
 
+/* Quill rich-text editor */
+.le-content-editor { background: white; border-radius: var(--radius-sm); }
+.le-content-editor .ql-toolbar.ql-snow {
+    border-color: var(--border);
+    border-top-left-radius: var(--radius-sm);
+    border-top-right-radius: var(--radius-sm);
+    background: var(--bg-card);
+}
+.le-content-editor .ql-container.ql-snow {
+    border-color: var(--border);
+    border-bottom-left-radius: var(--radius-sm);
+    border-bottom-right-radius: var(--radius-sm);
+    min-height: 180px;
+    font-family: inherit;
+    font-size: 0.95rem;
+}
+.le-content-editor .ql-editor { min-height: 180px; }
+
 .lesson-item-header h4 {
     flex: 1;
     font-size: 0.9rem;

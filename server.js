@@ -321,6 +321,95 @@ app.put('/api/users/:id/role', ...requireRole('admin'), (req, res) => {
 // ---------------------------------------------------------------------------
 // COURSE ROUTES
 // ---------------------------------------------------------------------------
+
+// Helpers
+function withStatus(course) {
+  if (!course) return course;
+  return { ...course, status: course.is_published ? 'published' : 'draft' };
+}
+
+function saveCourseLessons(courseId, lessons) {
+  if (!Array.isArray(lessons)) return;
+
+  const existing = dbAll('SELECT id FROM lessons WHERE course_id = ?', [courseId]);
+  const incomingIds = new Set(lessons.filter(l => l && l.id).map(l => l.id));
+
+  // Delete lessons no longer present
+  for (const row of existing) {
+    if (!incomingIds.has(row.id)) {
+      dbRun('DELETE FROM lessons WHERE id = ?', [row.id]);
+    }
+  }
+
+  // Upsert lessons in order
+  for (let i = 0; i < lessons.length; i++) {
+    const l = lessons[i] || {};
+    const title = (l.title || '').trim();
+    if (!title) continue; // skip blank lessons
+
+    const content = l.content || '';
+    const duration = parseInt(l.duration ?? l.duration_minutes) || 0;
+    const orderNum = i;
+
+    let lessonId;
+    if (l.id && existing.some(r => r.id === l.id)) {
+      dbRun(
+        'UPDATE lessons SET title = ?, content = ?, order_num = ?, duration_minutes = ? WHERE id = ?',
+        [title, content, orderNum, duration, l.id]
+      );
+      lessonId = l.id;
+    } else {
+      const result = dbRun(
+        'INSERT INTO lessons (course_id, title, content, order_num, duration_minutes) VALUES (?, ?, ?, ?, ?)',
+        [courseId, title, content, orderNum, duration]
+      );
+      lessonId = result.lastInsertRowid;
+    }
+
+    // Handle quiz upsert
+    const quiz = l.quiz;
+    const existingQuiz = dbGet('SELECT * FROM quizzes WHERE lesson_id = ?', [lessonId]);
+    if (quiz && Array.isArray(quiz.questions) && quiz.questions.length > 0) {
+      let quizId;
+      if (existingQuiz) {
+        dbRun('UPDATE quizzes SET title = ?, passing_score = ? WHERE id = ?', [
+          quiz.title || `${title} Quiz`,
+          quiz.passingScore ?? quiz.passing_score ?? 70,
+          existingQuiz.id
+        ]);
+        dbRun('DELETE FROM quiz_questions WHERE quiz_id = ?', [existingQuiz.id]);
+        quizId = existingQuiz.id;
+      } else {
+        const r = dbRun('INSERT INTO quizzes (lesson_id, title, passing_score) VALUES (?, ?, ?)', [
+          lessonId,
+          quiz.title || `${title} Quiz`,
+          quiz.passingScore ?? quiz.passing_score ?? 70
+        ]);
+        quizId = r.lastInsertRowid;
+      }
+      for (let qi = 0; qi < quiz.questions.length; qi++) {
+        const q = quiz.questions[qi];
+        const questionText = q.question_text || q.question || '';
+        if (!questionText.trim()) continue;
+        dbRun(
+          'INSERT INTO quiz_questions (quiz_id, question_text, question_type, options, correct_answer, order_num) VALUES (?, ?, ?, ?, ?, ?)',
+          [
+            quizId,
+            questionText,
+            q.question_type || 'multiple_choice',
+            JSON.stringify(q.options || []),
+            String(q.correct_answer ?? q.correctAnswer ?? 0),
+            qi
+          ]
+        );
+      }
+    } else if (existingQuiz) {
+      // Quiz removed
+      dbRun('DELETE FROM quizzes WHERE id = ?', [existingQuiz.id]);
+    }
+  }
+}
+
 app.get('/api/courses', requireAuth, (req, res) => {
   try {
     let courses;
@@ -344,7 +433,7 @@ app.get('/api/courses', requireAuth, (req, res) => {
         ORDER BY c.updated_at DESC
       `);
     }
-    res.json({ courses });
+    res.json({ courses: courses.map(withStatus) });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -368,7 +457,7 @@ app.get('/api/courses/:id', requireAuth, (req, res) => {
     const lessons = dbAll('SELECT * FROM lessons WHERE course_id = ? ORDER BY order_num ASC', [courseId]);
     const enrollment = dbGet('SELECT * FROM enrollments WHERE user_id = ? AND course_id = ?', [req.user.id, courseId]);
 
-    res.json({ course, lessons, enrolled: !!enrollment });
+    res.json({ course: withStatus(course), lessons, enrolled: !!enrollment });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -376,16 +465,21 @@ app.get('/api/courses/:id', requireAuth, (req, res) => {
 
 app.post('/api/courses', ...requireRole('admin', 'instructor'), (req, res) => {
   try {
-    const { title, description, thumbnail_url, category, difficulty } = req.body;
+    const { title, description, thumbnail_url, category, difficulty, status, lessons } = req.body;
     if (!title) return res.status(400).json({ error: 'Title is required' });
 
-    const result = dbRun(`
-      INSERT INTO courses (title, description, thumbnail_url, instructor_id, category, difficulty)
-      VALUES (?, ?, ?, ?, ?, ?)
-    `, [title, description || '', thumbnail_url || '', req.user.id, category || '', difficulty || 'beginner']);
+    const isPublished = status === 'published' ? 1 : 0;
 
-    const course = dbGet('SELECT * FROM courses WHERE id = ?', [result.lastInsertRowid]);
-    res.status(201).json({ course });
+    const result = dbRun(`
+      INSERT INTO courses (title, description, thumbnail_url, instructor_id, category, difficulty, is_published)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `, [title, description || '', thumbnail_url || '', req.user.id, category || '', difficulty || 'beginner', isPublished]);
+
+    const courseId = result.lastInsertRowid;
+    saveCourseLessons(courseId, lessons);
+
+    const course = dbGet('SELECT * FROM courses WHERE id = ?', [courseId]);
+    res.status(201).json({ course: withStatus(course) });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -400,9 +494,13 @@ app.put('/api/courses/:id', ...requireRole('admin', 'instructor'), (req, res) =>
       return res.status(403).json({ error: 'Not authorized to edit this course' });
     }
 
-    const { title, description, thumbnail_url, category, difficulty } = req.body;
+    const { title, description, thumbnail_url, category, difficulty, status, lessons } = req.body;
+    const isPublished = status === undefined
+      ? course.is_published
+      : (status === 'published' ? 1 : 0);
+
     dbRun(`
-      UPDATE courses SET title = ?, description = ?, thumbnail_url = ?, category = ?, difficulty = ?, updated_at = datetime('now')
+      UPDATE courses SET title = ?, description = ?, thumbnail_url = ?, category = ?, difficulty = ?, is_published = ?, updated_at = datetime('now')
       WHERE id = ?
     `, [
       title ?? course.title,
@@ -410,11 +508,14 @@ app.put('/api/courses/:id', ...requireRole('admin', 'instructor'), (req, res) =>
       thumbnail_url ?? course.thumbnail_url,
       category ?? course.category,
       difficulty ?? course.difficulty,
+      isPublished,
       courseId
     ]);
 
+    if (lessons !== undefined) saveCourseLessons(courseId, lessons);
+
     const updated = dbGet('SELECT * FROM courses WHERE id = ?', [courseId]);
-    res.json({ course: updated });
+    res.json({ course: withStatus(updated) });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

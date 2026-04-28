@@ -975,7 +975,33 @@ async function openCourseEditor(courseId) {
     if (courseId) {
         try {
             const data = await api(`/courses/${courseId}`);
-            course = data.course || data;
+            course = data.course || {};
+            // Attach lessons (the API returns them alongside the course, not nested)
+            const lessons = data.lessons || [];
+            // Fetch quizzes for each lesson (so editor shows existing quiz questions)
+            course.lessons = await Promise.all(lessons.map(async (l) => {
+                const lesson = {
+                    id: l.id,
+                    title: l.title || '',
+                    content: l.content || '',
+                    duration: l.duration_minutes || '',
+                    quiz: null,
+                };
+                try {
+                    const qd = await api(`/courses/${courseId}/lessons/${l.id}`);
+                    if (qd && qd.quiz) {
+                        lesson.quiz = {
+                            passingScore: qd.quiz.passing_score || 70,
+                            questions: (qd.questions || []).map(q => ({
+                                question: q.question_text,
+                                options: q.options || ['', '', '', ''],
+                                correctAnswer: parseInt(q.correct_answer) || 0,
+                            })),
+                        };
+                    }
+                } catch (e) { /* lesson may not have quiz */ }
+                return lesson;
+            }));
         } catch (err) {
             showToast(err.message, 'error');
             return;
@@ -984,7 +1010,9 @@ async function openCourseEditor(courseId) {
 
     window._editorCourse = JSON.parse(JSON.stringify(course));
     window._editorCourseId = courseId || null;
+    window._quillEditors = {};
     renderCourseEditorModal();
+    initLessonRichTextEditors();
 }
 
 function renderCourseEditorModal() {
@@ -1062,8 +1090,8 @@ function lessonEditorHtml(lesson, index) {
                     </div>
                 </div>
                 <div class="form-group">
-                    <label class="form-label">Content (HTML)</label>
-                    <textarea class="form-textarea le-content" rows="6" placeholder="<h2>Lesson Content</h2><p>Write lesson content here...</p>">${escapeHtml(lesson.content || '')}</textarea>
+                    <label class="form-label">Content</label>
+                    <div class="le-content-editor" data-lesson-index="${index}" data-initial="${encodeURIComponent(lesson.content || '')}"></div>
                 </div>
                 <div style="margin-top:12px;">
                     <label style="display:flex; align-items:center; gap:8px; cursor:pointer;">
@@ -1106,16 +1134,48 @@ function questionEditorHtml(lessonIndex, qIndex, question = { question: '', opti
     `;
 }
 
+function initLessonRichTextEditors() {
+    if (typeof Quill === 'undefined') return;
+    window._quillEditors = window._quillEditors || {};
+    document.querySelectorAll('.le-content-editor').forEach(el => {
+        const idx = el.getAttribute('data-lesson-index');
+        if (el.dataset.quillReady === '1') return;
+        const initial = decodeURIComponent(el.getAttribute('data-initial') || '');
+        const quill = new Quill(el, {
+            theme: 'snow',
+            placeholder: 'Write lesson content here...',
+            modules: {
+                toolbar: [
+                    [{ header: [1, 2, 3, false] }],
+                    ['bold', 'italic', 'underline', 'strike'],
+                    [{ color: [] }, { background: [] }],
+                    [{ list: 'ordered' }, { list: 'bullet' }],
+                    ['blockquote', 'code-block'],
+                    ['link', 'image', 'video'],
+                    [{ align: [] }],
+                    ['clean']
+                ]
+            }
+        });
+        if (initial) quill.clipboard.dangerouslyPasteHTML(initial);
+        el.dataset.quillReady = '1';
+        window._quillEditors[idx] = quill;
+    });
+}
+
 function addEditorLesson() {
+    syncEditorState();
     window._editorCourse.lessons = window._editorCourse.lessons || [];
     window._editorCourse.lessons.push({ title: '', content: '', duration: '', quiz: null });
     renderCourseEditorModal();
+    initLessonRichTextEditors();
 }
 
 function removeEditorLesson(index) {
     syncEditorState();
     window._editorCourse.lessons.splice(index, 1);
     renderCourseEditorModal();
+    initLessonRichTextEditors();
 }
 
 function toggleLessonDetail(index) {
@@ -1134,12 +1194,14 @@ function addQuizQuestion(lessonIndex) {
     if (!lesson.quiz) lesson.quiz = { passingScore: 70, questions: [] };
     lesson.quiz.questions.push({ question: '', options: ['', '', '', ''], correctAnswer: 0 });
     renderCourseEditorModal();
+    initLessonRichTextEditors();
 }
 
 function removeQuizQuestion(lessonIndex, qIndex) {
     syncEditorState();
     window._editorCourse.lessons[lessonIndex].quiz.questions.splice(qIndex, 1);
     renderCourseEditorModal();
+    initLessonRichTextEditors();
 }
 
 function syncEditorState() {
@@ -1155,7 +1217,12 @@ function syncEditorState() {
         if (!c.lessons[i]) return;
         c.lessons[i].title = el.querySelector('.le-title')?.value || '';
         c.lessons[i].duration = parseInt(el.querySelector('.le-duration')?.value) || null;
-        c.lessons[i].content = el.querySelector('.le-content')?.value || '';
+        const quill = window._quillEditors && window._quillEditors[i];
+        if (quill) {
+            const html = quill.root.innerHTML;
+            // Treat empty <p><br></p> as empty
+            c.lessons[i].content = (html === '<p><br></p>') ? '' : html;
+        }
 
         const hasQuiz = el.querySelector('.le-has-quiz')?.checked;
         if (hasQuiz) {
